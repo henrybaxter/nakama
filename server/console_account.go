@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -257,6 +259,8 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.Account
 }
 
 func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccountsRequest) (*console.AccountList, error) {
+	const limit = 50
+
 	// Searching only through tombstone records.
 	if in.Tombstones {
 		var userID *uuid.UUID
@@ -328,65 +332,59 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 		}, nil
 	}
 
-	if in.Filter != "" {
-		_, err := uuid.FromString(in.Filter)
-		// If the filter is not a valid user ID treat it as a username instead.
-
-		var query string
-		params := []interface{}{in.Filter}
-		if err == nil {
-			query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users WHERE id = $1"
-		} else if strings.Contains(in.Filter, "%") {
-			query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users WHERE username LIKE $1"
-		} else {
-			query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users WHERE username = $1"
-		}
-
-		if in.Banned {
-			query += " AND disable_time <> '1970-01-01 00:00:00 UTC'"
-		}
-
-		rows, err := s.db.QueryContext(ctx, query, params...)
-		if err != nil {
-			s.logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
-			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
-		}
-
-		users := make([]*api.User, 0, 2)
-
-		for rows.Next() {
-			user, err := convertUser(s.tracker, rows)
-			if err != nil {
-				_ = rows.Close()
-				s.logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
-				return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
-			}
-			users = append(users, user)
-		}
-		_ = rows.Close()
-
-		return &console.AccountList{
-			Users:      users,
-			TotalCount: countAccounts(ctx, s.logger, s.db),
-		}, nil
-	}
-
+	params := make([]interface{}, 0)
 	var query string
+	addQueryCondition := func(predicate string, value interface{}) {
+		if query == "" {
+			query += " WHERE "
+		} else {
+			query += " AND "
+		}
+		params = append(params, value)
+		query += fmt.Sprintf("%s $%d", predicate, len(params))
+	}
 
 	if in.Banned {
-		query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users WHERE disable_time <> '1970-01-01 00:00:00 UTC' LIMIT 50"
-	} else {
-		query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users LIMIT 50"
+		addQueryCondition("disable_time <>", "'1970-01-01 00:00:00 UTC'")
 	}
 
-	rows, err := s.db.QueryContext(ctx, query)
+	if in.Filter != "" {
+		_, err := uuid.FromString(in.Filter)
+		// If the filter is a valid user ID check for user_id otherwsie either exact or pattern seach on username
+		if err == nil {
+			addQueryCondition("id =", in.Filter)
+		} else if strings.Contains(in.Filter, "%") {
+			addQueryCondition("username LIKE", in.Filter)
+		} else {
+			addQueryCondition("username =", in.Filter)
+		}
+	}
+
+	if in.Cursor != "" {
+		cursor, err := base64.RawURLEncoding.DecodeString(in.Cursor)
+		if err != nil {
+			s.logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to decode account list request cursor.")
+		}
+		if in.Prev {
+			addQueryCondition("id <= ", string(cursor))
+		} else {
+			addQueryCondition("id >", string(cursor)	)
+		}
+	}
+
+	query = "SELECT id, username, display_name, avatar_url, lang_tag, location, timezone, metadata, apple_id, facebook_id, facebook_instant_game_id, google_id, gamecenter_id, steam_id, edge_count, create_time, update_time FROM users" + query
+	query += fmt.Sprintf(" ORDER BY id ASC LIMIT %d", limit)
+
+	rows, err := s.db.QueryContext(ctx, query, params...)
 	if err != nil {
 		s.logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
 		return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 	}
 
-	users := make([]*api.User, 0, 50)
+	users := make([]*api.User, 0, 2)
 
+	cursor := ""
 	for rows.Next() {
 		user, err := convertUser(s.tracker, rows)
 		if err != nil {
@@ -394,15 +392,24 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 			s.logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
-
+		cursor = user.Id
 		users = append(users, user)
 	}
 	_ = rows.Close()
 
+	if len(users) < limit {
+		cursor = ""
+	}
+	if cursor != "" {
+		cursor = base64.RawURLEncoding.EncodeToString([]byte(cursor))
+	}
+
 	return &console.AccountList{
 		Users:      users,
 		TotalCount: countAccounts(ctx, s.logger, s.db),
+		Cursor: 		cursor,
 	}, nil
+
 }
 
 func countAccounts(ctx context.Context, logger *zap.Logger, db *sql.DB) int32 {
