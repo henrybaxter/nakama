@@ -369,7 +369,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 		if in.Prev {
 			addQueryCondition("id <= ", string(cursor))
 		} else {
-			addQueryCondition("id >", string(cursor)	)
+			addQueryCondition("id >", string(cursor))
 		}
 	}
 
