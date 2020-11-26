@@ -350,7 +350,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 	if in.Filter != "" {
 		_, err := uuid.FromString(in.Filter)
-		// If the filter is a valid user ID check for user_id otherwsie either exact or pattern seach on username
+		// If the filter is a valid user ID check for user_id otherwise either exact or pattern search on username
 		if err == nil {
 			addQueryCondition("id =", in.Filter)
 		} else if strings.Contains(in.Filter, "%") {
