@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -259,7 +260,7 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.Account
 }
 
 func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccountsRequest) (*console.AccountList, error) {
-	const limit = 100
+	const limit = 2
 
 	// Searching only through tombstone records.
 	if in.Tombstones {
@@ -366,10 +367,15 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 			s.logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to decode account list request cursor.")
 		}
+		var decodedCursor string
+		if err := gob.NewDecoder(bytes.NewReader(cursor)).Decode(&decodedCursor); err != nil {
+			s.logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to decode account list request cursor.")
+		}
 		if in.Prev {
-			addQueryCondition("id <= ", string(cursor))
+			addQueryCondition("id <= ", decodedCursor)
 		} else {
-			addQueryCondition("id >", string(cursor))
+			addQueryCondition("id >", decodedCursor)
 		}
 	}
 
@@ -401,7 +407,13 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 		cursor = ""
 	}
 	if cursor != "" {
-		cursor = base64.RawURLEncoding.EncodeToString([]byte(cursor))
+		buf := bytes.NewBuffer([]byte{})
+		err := gob.NewEncoder(buf).Encode(cursor)
+		if err != nil {
+			s.logger.Error("Error encoding account list cursor.", zap.String("cursor", cursor), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to encoding account list request cursor.")
+		}
+		cursor = base64.RawURLEncoding.EncodeToString(buf.Bytes())
 	}
 
 	return &console.AccountList{
