@@ -259,7 +259,7 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.Account
 }
 
 func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccountsRequest) (*console.AccountList, error) {
-	const limit = 50
+	const limit = 100
 
 	// Searching only through tombstone records.
 	if in.Tombstones {
