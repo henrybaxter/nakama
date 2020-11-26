@@ -308,7 +308,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
 
-		users := make([]*api.User, 0, 50)
+		users := make([]*api.User, 0, limit)
 
 		for rows.Next() {
 			var id string
